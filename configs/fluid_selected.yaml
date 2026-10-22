@@ -1,0 +1,9 @@
+# PINN-Vanila | physical fluid properties adopted unchanged from fluid.yaml
+id: model_fluid_nu_1e-3
+name: Model fluid (not water at 20 C)
+density: 998.0
+kinematic_viscosity: 0.001
+dynamic_viscosity: 0.998
+validation:
+  require_mu_equals_rho_nu: true
+  relative_tolerance: 1.0e-10

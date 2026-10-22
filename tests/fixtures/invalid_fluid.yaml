@@ -1,0 +1,6 @@
+density: 998.0
+kinematic_viscosity: 0.001
+dynamic_viscosity: 1.1
+validation:
+  require_mu_equals_rho_nu: true
+  relative_tolerance: 1.0e-10

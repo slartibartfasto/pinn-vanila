@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pinn-vanila"
+version = "0.1.0"
+description = "Physics-informed neural network for steady incompressible flow in parametric planar bends"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26,<3",
+  "PyYAML>=6.0,<7",
+  "torch>=2.4,<3",
+]
+
+[project.optional-dependencies]
+io = ["h5py>=3.11,<4", "meshio>=5.3,<6"]
+
+[project.scripts]
+pinn-vanila = "pinn_vanila.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

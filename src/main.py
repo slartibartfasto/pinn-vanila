@@ -1,1 +1,5 @@
-print('I am a templete.')
+from pinn_vanila.cli import main
+
+
+if __name__ == "__main__":
+    main()

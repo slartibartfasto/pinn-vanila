@@ -1,0 +1,30 @@
+# PINN-Vanila | parametric smooth planar bend
+id: pb_parametric_15_90
+kind: smooth_planar_bend
+pipe_width: 0.5
+bend_radius: 1.0
+inlet_length: 2.0
+outlet_length: 2.0
+bend_angle: 90.0
+parameter_bounds:
+  bend_angle_deg: [15.0, 90.0]
+  pipe_width_m: [0.5, 0.5]
+  bend_radius_m: [1.0, 1.0]
+  inlet_length_m: [2.0, 2.0]
+  outlet_length_m: [2.0, 2.0]
+coordinate_system:
+  physical: cartesian_xy_m
+  neural: centerline_s_eta
+  origin: inlet_center
+  inlet_tangent: [1.0, 0.0]
+  centerline_continuity: C1
+validation:
+  min_inner_radius_m: 0.001
+  enforce_nonintersecting_walls: true
+  require_mapping_positive_jacobian: true
+sampling:
+  step: 0.02
+  wall_points: 900
+  inlet_points: 100
+  outlet_points: 100
+  refine_curved_walls: true
