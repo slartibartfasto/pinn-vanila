@@ -38,8 +38,15 @@ Use small overrides only for an execution smoke test:
   --output /tmp/pinn-smoke --quick
 ```
 
-The module is also directly runnable with `python -m pinn_vanila.train --output /tmp/pinn-smoke --quick`.
-In VS Code, open `src/pinn_vanila/train.py` and click **Run Python File** to start the full configured training; its default checkpoint directory is `trained/seed-42`. Use `--quick` from the terminal for a one-step execution check.
+The module is also directly runnable with `python -m pinn_vanila.train --output /tmp/pinn-smoke --quick --device cuda`.
+In VS Code, open `src/pinn_vanila/train.py` and click **Run Python File** to start the full configured GPU training; its default checkpoint directory is `trained/seed-42`. CUDA is mandatory by default, so a machine without an attached NVIDIA GPU fails clearly instead of silently using the CPU. Use `--device cpu` only for a short debugging run.
+
+The model directory records the run as it proceeds:
+
+- `training.log` contains timestamped console logs with total, continuity, momentum, outlet-boundary, and mass-flux losses.
+- `metrics.csv` contains loss values and loss weights at every configured logging step; `metrics.json` adds field diagnostics and structural checks.
+- `training_losses.png` plots PDE, boundary, flux, and total loss histories.
+- `fields/fields_step_*.png` contains velocity components, speed, relative pressure, and velocity vectors every 200 steps, plus the final step.
 
 A saved directory contains `model.pt` plus `metadata.json`, including the physical domain and validation status. A trained model is not labeled CFD-validated until it has been compared with independent, boundary-condition-matched reference data.
 

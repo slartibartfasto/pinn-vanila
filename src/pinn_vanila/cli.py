@@ -61,6 +61,8 @@ def train(args: argparse.Namespace) -> int:
             boundary_batch=args.boundary_batch,
             enable_refinement=not args.no_rar,
             enable_polishing=not args.skip_polishing,
+            log_every=args.log_every,
+            field_every=args.field_every,
         )
     )
     print(json.dumps(report, indent=2))
@@ -121,11 +123,13 @@ def build_parser() -> argparse.ArgumentParser:
     training = subparsers.add_parser("train", help="run physics-only curriculum training")
     training.add_argument("--config", default="configs/pinn_vanila_config.yaml")
     training.add_argument("--output", required=True)
-    training.add_argument("--device", default="auto")
+    training.add_argument("--device", default="cuda", help="CUDA device; CPU requires an explicit --device cpu")
     training.add_argument("--max-steps", type=int)
     training.add_argument("--seed", type=int, help="override project.random_seed for an independent run")
     training.add_argument("--interior-batch", type=int)
     training.add_argument("--boundary-batch", type=int)
+    training.add_argument("--log-every", type=int)
+    training.add_argument("--field-every", type=int)
     training.add_argument("--no-rar", action="store_true", help="disable residual adaptive refinement")
     training.add_argument("--skip-polishing", action="store_true", help="skip final fixed-point L-BFGS")
     training.set_defaults(handler=train)

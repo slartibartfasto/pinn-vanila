@@ -166,5 +166,10 @@ runtime:
   on_untrained_geometry: error_require_retraining
   output_quantities: [u_m_s, v_m_s, p_Pa, velocity_magnitude_m_s]
   export: [vtu, csv, hdf5]
-  device: cuda_if_available
+  device: cuda_required_for_training
   report_training_domain_and_validation_status: true
+
+reporting:
+  console_and_metrics_every_steps: 10
+  field_images_and_diagnostics_every_steps: 200
+  field_plot_resolution: [181, 81]

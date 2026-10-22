@@ -6,6 +6,7 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import torch
@@ -14,6 +15,9 @@ from .case import ProjectConfig
 from .model import PINN
 from .physics import navier_stokes_residuals, outlet_normal_gradients
 from .sampling import PhysicsSampler, SampleBatch
+
+
+ProgressCallback = Callable[[dict[str, float], PINN], None]
 
 
 @dataclass
@@ -195,6 +199,8 @@ class Trainer:
         checkpoint_directory: str | Path | None = None,
         enable_refinement: bool = True,
         enable_polishing: bool = True,
+        log_every: int = 100,
+        progress_callbacks: Sequence[ProgressCallback] | None = None,
     ) -> TrainingResult:
         training = self.config.raw.get("training", {}) or {}
         adam = training.get("optimizer_adam", {}) or {}
@@ -204,6 +210,8 @@ class Trainer:
         requested_total = per_stage * len(stages) if max_steps is None else int(max_steps)
         if requested_total <= 0:
             raise ValueError("max_steps must be positive")
+        if log_every <= 0:
+            raise ValueError("log_every must be positive")
         interior_n = int(interior_batch or collocation.get("adam_interior_batch", 4096))
         boundary_n = int(boundary_batch or collocation.get("adam_boundary_batch", 1024))
         parameter_cases = int(collocation.get("parameter_samples_per_batch", 16))
@@ -224,9 +232,10 @@ class Trainer:
         started = time.monotonic()
         global_step = 0
         latest: dict[str, torch.Tensor] = {}
+        callbacks = tuple(progress_callbacks or ())
         self.model.network.train()
 
-        for reynolds_bounds, angle_bounds in stages:
+        for stage_index, (reynolds_bounds, angle_bounds) in enumerate(stages, start=1):
             stage_steps = min(per_stage, requested_total - global_step)
             for _ in range(stage_steps):
                 optimizer.zero_grad(set_to_none=True)
@@ -242,10 +251,31 @@ class Trainer:
                 scheduler.step()
                 global_step += 1
 
-                if global_step == 1 or global_step % 100 == 0 or global_step == requested_total:
+                record_history = (
+                    global_step == 1 or global_step % log_every == 0 or global_step == requested_total
+                )
+                if record_history or callbacks:
                     entry = {name: float(value.detach()) for name, value in latest.items()}
-                    entry.update(step=float(global_step), total=float(total.detach()), lr=scheduler.get_last_lr()[0])
+                    entry.update(
+                        step=float(global_step),
+                        stage=float(stage_index),
+                        reynolds_min=float(reynolds_bounds[0]),
+                        reynolds_max=float(reynolds_bounds[1]),
+                        angle_min_deg=float(angle_bounds[0]),
+                        angle_max_deg=float(angle_bounds[1]),
+                        total=float(total.detach()),
+                        lr=float(scheduler.get_last_lr()[0]),
+                        elapsed_seconds=float(time.monotonic() - started),
+                    )
+                    entry.update({f"weight_{name}": float(value) for name, value in self.weights.items()})
+                if record_history:
                     history.append(entry)
+                for callback in callbacks:
+                    callback(entry, self.model)
+                # Reporters may use inference utilities, which select eval mode.
+                # Restore training mode before sampling the next optimization step.
+                if callbacks:
+                    self.model.network.train()
                 if refinement_enabled and refinement_interval > 0 and global_step % refinement_interval == 0:
                     self._refine(reynolds_bounds, angle_bounds)
                 if checkpoint_directory and checkpoint_every > 0 and global_step % checkpoint_every == 0:
@@ -313,6 +343,10 @@ class Trainer:
             }
 
         final = {name: float(value.detach()) for name, value in latest.items()}
+        if latest:
+            final["total"] = float(
+                sum(self.weights[name] * value for name, value in latest.items()).detach()
+            )
         elapsed = time.monotonic() - started
         self.model.training_summary = {
             "random_seed": int(
