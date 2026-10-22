@@ -4,24 +4,41 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
 
-from .case import ProjectConfig
-from .model import PINN
-from .trainer import Trainer
-from .validation import structural_validation
+MODULE_PATH = Path(__file__).resolve()
+SOURCE_ROOT = MODULE_PATH.parents[1]
+PROJECT_ROOT = MODULE_PATH.parents[2]
+DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "pinn_vanila_config.yaml"
+DEFAULT_OUTPUT = PROJECT_ROOT / "trained" / "seed-42"
+
+# VS Code's "Run Python File" executes this source file directly, rather than
+# through ``python -m``. Add the src root in that case so package imports work
+# in a fresh checkout as well as in an editable installation.
+if __package__ in {None, ""}:  # pragma: no cover - exercised by direct CLI launch
+    sys.path.insert(0, str(SOURCE_ROOT))
+    from pinn_vanila.case import ProjectConfig
+    from pinn_vanila.model import PINN
+    from pinn_vanila.trainer import Trainer
+    from pinn_vanila.validation import structural_validation
+else:
+    from .case import ProjectConfig
+    from .model import PINN
+    from .trainer import Trainer
+    from .validation import structural_validation
 
 
 @dataclass(frozen=True)
 class TrainingOptions:
     """Runtime overrides for one training run."""
 
-    config_path: str | Path = "configs/pinn_vanila_config.yaml"
-    output: str | Path = "trained/model"
+    config_path: str | Path = DEFAULT_CONFIG
+    output: str | Path = DEFAULT_OUTPUT
     device: str = "auto"
     seed: int | None = None
     max_steps: int | None = None
@@ -77,8 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pinn-vanila-train", description="Initialize and train a PINN-Vanila model"
     )
-    parser.add_argument("--config", default="configs/pinn_vanila_config.yaml")
-    parser.add_argument("--output", required=True)
+    parser.add_argument("--config", default=DEFAULT_CONFIG)
+    parser.add_argument(
+        "--output",
+        default=DEFAULT_OUTPUT,
+        help=f"checkpoint directory (default: {DEFAULT_OUTPUT})",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, help="override project.random_seed")
     parser.add_argument("--max-steps", type=int)

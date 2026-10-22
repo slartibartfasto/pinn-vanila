@@ -1,7 +1,14 @@
 import unittest
 from pathlib import Path
 
-from pinn_vanila.train import TrainingOptions, initialize_training, options_from_args, build_parser
+from pinn_vanila.train import (
+    DEFAULT_CONFIG,
+    DEFAULT_OUTPUT,
+    TrainingOptions,
+    build_parser,
+    initialize_training,
+    options_from_args,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +34,11 @@ class TrainingEntryTests(unittest.TestCase):
         self.assertEqual(options.boundary_batch, 4)
         self.assertFalse(options.enable_refinement)
         self.assertFalse(options.enable_polishing)
+
+    def test_direct_run_has_a_default_output_directory(self):
+        args = build_parser().parse_args([])
+        self.assertEqual(Path(args.output), DEFAULT_OUTPUT)
+        self.assertEqual(Path(args.config), DEFAULT_CONFIG)
 
 
 if __name__ == "__main__":

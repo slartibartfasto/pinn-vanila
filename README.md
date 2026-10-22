@@ -39,6 +39,7 @@ Use small overrides only for an execution smoke test:
 ```
 
 The module is also directly runnable with `python -m pinn_vanila.train --output /tmp/pinn-smoke --quick`.
+In VS Code, open `src/pinn_vanila/train.py` and click **Run Python File** to start the full configured training; its default checkpoint directory is `trained/seed-42`. Use `--quick` from the terminal for a one-step execution check.
 
 A saved directory contains `model.pt` plus `metadata.json`, including the physical domain and validation status. A trained model is not labeled CFD-validated until it has been compared with independent, boundary-condition-matched reference data.
 
