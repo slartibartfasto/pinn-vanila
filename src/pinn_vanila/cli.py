@@ -13,7 +13,7 @@ from .case import BendGeometry, FlowCase, ProjectConfig
 from .evaluation import evaluate_model, load_reference
 from .export import export_prediction
 from .model import PINN
-from .trainer import Trainer
+from .train import TrainingOptions, run_training
 from .validation import structural_validation
 
 
@@ -50,34 +50,20 @@ def validate_config(args: argparse.Namespace) -> int:
 
 
 def train(args: argparse.Namespace) -> int:
-    config = ProjectConfig.from_yaml(args.config)
-    if args.seed is not None:
-        config.raw.setdefault("project", {})["random_seed"] = args.seed
-    model = PINN.from_config(config)
-    trainer = Trainer(model, config, _device(args.device))
-    result = trainer.train(
-        max_steps=args.max_steps,
-        interior_batch=args.interior_batch,
-        boundary_batch=args.boundary_batch,
-        checkpoint_directory=Path(args.output) / "checkpoints",
-        enable_refinement=not args.no_rar,
-        enable_polishing=not args.skip_polishing,
-    )
-    model.validation_status = "trained_structurally_checked_no_cfd_reference"
-    model.training_summary["structural_validation"] = structural_validation(model)
-    model.save(args.output)
-    print(
-        json.dumps(
-            {
-                "model": str(Path(args.output).resolve()),
-                "steps": result.steps,
-                "elapsed_seconds": result.elapsed_seconds,
-                "final_losses": result.final_losses,
-                "validation_status": model.validation_status,
-            },
-            indent=2,
+    report = run_training(
+        TrainingOptions(
+            config_path=args.config,
+            output=args.output,
+            device=args.device,
+            seed=args.seed,
+            max_steps=args.max_steps,
+            interior_batch=args.interior_batch,
+            boundary_batch=args.boundary_batch,
+            enable_refinement=not args.no_rar,
+            enable_polishing=not args.skip_polishing,
         )
     )
+    print(json.dumps(report, indent=2))
     return 0
 
 

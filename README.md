@@ -23,7 +23,7 @@ Validate the supplied geometry, fluid properties, mappings, and hard boundary co
 The complete configured run is intentionally expensive: four curriculum stages with as many as 50,000 Adam steps per stage, second derivatives in float64, RAR candidate pools, and three independent seeds required by the experimental plan. Start one seed with:
 
 ```bash
-.venv/bin/pinn-vanila train \
+.venv/bin/pinn-vanila-train \
   --config configs/pinn_vanila_config.yaml \
   --output trained/seed-42
 ```
@@ -33,11 +33,12 @@ Repeat with `--seed 137` and `--seed 2026` and distinct output directories for t
 Use small overrides only for an execution smoke test:
 
 ```bash
-.venv/bin/pinn-vanila train \
+.venv/bin/pinn-vanila-train \
   --config configs/pinn_vanila_config.yaml \
-  --output /tmp/pinn-smoke \
-  --max-steps 1 --interior-batch 8 --boundary-batch 8 --no-rar --skip-polishing
+  --output /tmp/pinn-smoke --quick
 ```
+
+The module is also directly runnable with `python -m pinn_vanila.train --output /tmp/pinn-smoke --quick`.
 
 A saved directory contains `model.pt` plus `metadata.json`, including the physical domain and validation status. A trained model is not labeled CFD-validated until it has been compared with independent, boundary-condition-matched reference data.
 

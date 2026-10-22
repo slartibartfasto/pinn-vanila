@@ -19,6 +19,7 @@ io = ["h5py>=3.11,<4", "meshio>=5.3,<6"]
 
 [project.scripts]
 pinn-vanila = "pinn_vanila.cli:main"
+pinn-vanila-train = "pinn_vanila.train:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
