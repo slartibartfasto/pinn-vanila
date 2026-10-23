@@ -1,0 +1,175 @@
+schema_version: '1.0-proposal'
+project:
+  name: PINN-Vanila
+  task: steady_2d_incompressible_bend
+  training_mode: physics_only
+  random_seed: 42
+  geometry_file: geometry_parametric.yaml
+  fluid_file: fluid_selected.yaml
+
+physical_problem:
+  equations: steady_incompressible_navier_stokes_2d
+  body_forces: false
+  reynolds_definition: vmax_times_width_div_nu
+  inlet_velocity_is: Vmax
+  inlet_velocity_bounds_m_s: [1.0, 20.0]
+  inlet_pressure_role: mean_inlet_static_pressure_gauge
+  inlet_pressure_pa: null
+  pressure_unit: Pa
+  pressure_kind: absolute
+  nondimensionalization:
+    length: channel_width
+    velocity: per_case_vmax
+    pressure: rho_times_vmax_squared
+    parameter_speed_encoding: normalized_log_re
+    parameter_angle_encoding: affine_minus1_plus1
+
+boundary_conditions:
+  inlet:
+    velocity: fully_developed_parabolic
+    pressure:
+      type: sectional_mean_gauge
+      location: inlet_cross_section
+      specified_at_runtime: true
+  walls:
+    velocity: no_slip
+    enforcement: hard
+  outlet:
+    pressure:
+      type: zero_normal_gradient
+      value_pa_per_m: 0.0
+      enforcement: soft
+      initial_loss_weight: 1.0
+    velocity:
+      type: zero_normal_gradient
+      enforcement: soft
+      initial_loss_weight: 1.0
+    consistency_check: required
+    alternatives_allowed_for_validation: [traction_open]
+  reversed_flow_on_outlet: warn_and_fail_validation
+
+network:
+  architecture: geometry_conditioned_residual_mlp
+  formulation: velocity_pressure
+  inputs: [x, y, reynolds, bend_angle]
+  derived_geometry_features: [centerline_s, cross_channel_eta, wall_distance]
+  hidden_layers: 8
+  hidden_width: 128
+  activation: tanh
+  residual_skip_interval: 2
+  parameter_conditioning: film
+  fourier_embedding:
+    enabled: true
+    spatial_features_per_scale: 16
+    scales: [1.0, 4.0]
+    input: normalized_centerline_coordinates
+  output_variables: [u, v, p]
+  output_representation:
+    velocity: dimensionless_times_vmax
+    pressure: mean_inlet_pressure_plus_rho_vmax_squared_times_relative_pressure
+  inlet_boundary_enforcement: hard
+  wall_boundary_enforcement: hard
+  initialization: xavier_normal
+  precision: float64
+  differentiation: autograd_physical_coordinates
+
+collocation:
+  interior_candidate_pool: 100000
+  boundary_candidate_pool: 15000
+  adam_interior_batch: 4096
+  adam_boundary_batch: 1024
+  parameter_samples_per_batch: 16
+  sampling: scrambled_sobol
+  stratification: [inlet, straight_sections, curved_section, near_walls, outlet]
+  wall_focus_fraction: 0.35
+  residual_adaptive_refinement:
+    enabled: true
+    interval_steps: 2000
+    added_points_each_round: 2048
+    preserve_uniform_sampling_fraction: 0.40
+
+loss:
+  dimensionless: true
+  continuity: 1.0
+  momentum_x: 1.0
+  momentum_y: 1.0
+  inlet_velocity: 0.0
+  wall_velocity: 0.0
+  outlet_pressure_gradient: 1.0
+  outlet_velocity_gradient: 1.0
+  mass_flux: 5.0
+  reference_data: 0.0
+  weighting: gradient_norm_balancing
+  weighting_update_every_steps: 200
+  weighting_clip_range: [0.1, 100.0]
+
+training:
+  method: curriculum_over_reynolds
+  reynolds_stages:
+    - [500, 1000]
+    - [500, 2500]
+    - [500, 5000]
+    - [500, 10000]
+  angle_stages_deg:
+    - [90, 90]
+    - [45, 90]
+    - [15, 90]
+  optimizer_adam:
+    name: Adam
+    initial_lr: 0.0005
+    min_lr: 0.00001
+    scheduler: cosine
+    max_steps_per_stage: 50000
+    gradient_clip_norm: 1.0
+  optimizer_polishing:
+    name: LBFGS
+    max_iterations: 3000
+    line_search_fn: strong_wolfe
+    fixed_points: true
+    maximum_polishing_points: 8192
+  early_stop:
+    use_total_loss_alone: false
+    require_physics_and_boundary_checks: true
+  checkpoint_every_steps: 2000
+  independent_seeds: [42, 137, 2026]
+  fallback_if_validation_fails:
+    high_re_experts: true
+    experts_ranges: [[500, 2500], [2000, 6000], [5500, 10000]]
+    require_overlap_continuity_validation: true
+    allow_hybrid_cfd_training: false
+
+validation:
+  require_no_reference_data_in_training: true
+  reference_format: [vtu, vtk, csv, hdf5]
+  perform_grid_convergence_for_cfd_reference: true
+  compare_on_unseen_velocities_and_angles: true
+  metrics: [relative_l2_velocity, normalized_pressure_error,
+            pressure_drop_error, mass_imbalance, wall_slip,
+            outlet_normal_pressure_gradient, pde_residual_rms,
+            outlet_backflow_fraction]
+  acceptance_targets_provisional:
+    relative_l2_velocity: 0.05
+    relative_pressure_drop_error: 0.05
+    mass_imbalance: 0.005
+    relative_wall_slip: 0.01
+  reject_invalid_geometry: true
+  reject_extrapolation_without_explicit_override: true
+  check_outlet_sensitivity_to_length: true
+  check_pressure_gauge_shift_invariance: true
+  poiseuille_test_use_compatible_boundary_conditions: true
+
+runtime:
+  geometry_file_required: true
+  inlet_velocity_m_s_required: true
+  inlet_pressure_pa_required: true
+  inference_mode: pretrained_only_within_trained_family
+  on_untrained_geometry: error_require_retraining
+  output_quantities: [u_m_s, v_m_s, p_Pa, velocity_magnitude_m_s]
+  export: [vtu, csv, hdf5]
+  device: cuda_required_for_training
+  report_training_domain_and_validation_status: true
+
+reporting:
+  console_and_metrics_every_steps: 10
+  field_images_and_diagnostics_every_steps: 200
+  field_plot_resolution: [181, 81]

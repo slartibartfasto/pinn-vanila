@@ -8,7 +8,7 @@ project:
   fluid_file: fluid_selected.yaml
 
 physical_problem:
-  equations: steady_incompressible_navier_stokes_2d
+  equations: steady_incompressible_rans_2d
   body_forces: false
   reynolds_definition: vmax_times_width_div_nu
   inlet_velocity_is: Vmax
@@ -24,9 +24,27 @@ physical_problem:
     parameter_speed_encoding: normalized_log_re
     parameter_angle_encoding: affine_minus1_plus1
 
+turbulence:
+  model: k_omega_1988
+  alpha: 0.5555555555555556
+  beta: 0.075
+  beta_star: 0.09
+  sigma_k: 0.5
+  sigma_omega: 0.5
+  # Intensity relative to Vmax, not the bulk velocity. These are modeling
+  # assumptions, not values measured for the supplied fluid/geometry.
+  inlet_intensity: 0.05
+  inlet_length_scale_over_width: 0.07
+  # Finite near-wall omega regularization; NOT a y+ specification.
+  wall_omega_distance_over_width: 0.01
+
 boundary_conditions:
   inlet:
     velocity: fully_developed_parabolic
+    turbulence:
+      enforcement: hard
+      k: intensity_parabolic_squared
+      omega: regularized_two_wall_profile
     pressure:
       type: sectional_mean_gauge
       location: inlet_cross_section
@@ -34,7 +52,14 @@ boundary_conditions:
   walls:
     velocity: no_slip
     enforcement: hard
+    turbulence:
+      enforcement: hard
+      k: zero
+      omega: regularized_two_wall_profile
   outlet:
+    turbulence:
+      type: zero_normal_gradient
+      enforcement: soft
     pressure:
       type: zero_normal_gradient
       value_pa_per_m: 0.0
@@ -50,7 +75,7 @@ boundary_conditions:
 
 network:
   architecture: geometry_conditioned_residual_mlp
-  formulation: velocity_pressure
+  formulation: velocity_pressure_k_omega
   inputs: [x, y, reynolds, bend_angle]
   derived_geometry_features: [centerline_s, cross_channel_eta, wall_distance]
   hidden_layers: 8
@@ -63,7 +88,7 @@ network:
     spatial_features_per_scale: 16
     scales: [1.0, 4.0]
     input: normalized_centerline_coordinates
-  output_variables: [u, v, p]
+  output_variables: [u, v, p, k, omega]
   output_representation:
     velocity: dimensionless_times_vmax
     pressure: mean_inlet_pressure_plus_rho_vmax_squared_times_relative_pressure
@@ -93,10 +118,14 @@ loss:
   continuity: 1.0
   momentum_x: 1.0
   momentum_y: 1.0
+  turbulent_k: 1.0
+  turbulent_omega: 1.0
   inlet_velocity: 0.0
   wall_velocity: 0.0
   outlet_pressure_gradient: 1.0
   outlet_velocity_gradient: 1.0
+  outlet_k_gradient: 1.0
+  outlet_omega_gradient: 1.0
   mass_flux: 5.0
   reference_data: 0.0
   weighting: gradient_norm_balancing
@@ -164,7 +193,8 @@ runtime:
   inlet_pressure_pa_required: true
   inference_mode: pretrained_only_within_trained_family
   on_untrained_geometry: error_require_retraining
-  output_quantities: [u_m_s, v_m_s, p_Pa, velocity_magnitude_m_s]
+  output_quantities: [u_m_s, v_m_s, p_Pa, velocity_magnitude_m_s,
+                      k_m2_s2, omega_s_inv, nu_t_m2_s]
   export: [vtu, csv, hdf5]
   device: cuda_required_for_training
   report_training_domain_and_validation_status: true

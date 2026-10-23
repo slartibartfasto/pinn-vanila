@@ -13,7 +13,7 @@ import torch
 
 from .case import ProjectConfig
 from .model import PINN
-from .physics import navier_stokes_residuals, outlet_normal_gradients
+from .physics import flow_residuals, all_outlet_normal_gradients
 from .sampling import PhysicsSampler, SampleBatch
 
 
@@ -35,6 +35,8 @@ class Trainer:
         self.model = model.to(device)
         self.config = config
         self.device = torch.device(device)
+        if model.network.config.turbulence != config.turbulence:
+            raise ValueError("Network closure and training configuration must match")
         seed = int((config.raw.get("project", {}) or {}).get("random_seed", 42))
         torch.manual_seed(seed)
         self.sampler = PhysicsSampler(
@@ -49,6 +51,14 @@ class Trainer:
             "outlet_velocity_gradient": float(loss_config.get("outlet_velocity_gradient", 1.0)),
             "mass_flux": float(loss_config.get("mass_flux", 5.0)),
         }
+        if config.turbulence.enabled:
+            self.weights.update({
+                name: float(loss_config.get(name, 1.0))
+                for name in (
+                    "turbulent_k", "turbulent_omega",
+                    "outlet_k_gradient", "outlet_omega_gradient",
+                )
+            })
         self.adaptive_interval = int(loss_config.get("weighting_update_every_steps", 200))
         clip = loss_config.get("weighting_clip_range", [0.1, 100.0])
         self.weight_clip = (float(clip[0]), float(clip[1]))
@@ -101,7 +111,7 @@ class Trainer:
     ) -> dict[str, torch.Tensor]:
         interior = self._interior(interior_batch, reynolds_bounds, angle_bounds)
         xy = interior.xy.detach().requires_grad_(True)
-        residuals = navier_stokes_residuals(
+        residuals = flow_residuals(
             self.model.network, xy, interior.reynolds, interior.angle_deg
         )
         losses = {
@@ -109,14 +119,26 @@ class Trainer:
             "momentum_x": residuals.momentum_x.square().mean(),
             "momentum_y": residuals.momentum_y.square().mean(),
         }
+        if self.config.turbulence.enabled:
+            closure = self.config.turbulence
+            # Explicit constant residual scaling for positive turbulence variables.
+            # Diagnostics retain the raw dimensionless residual RMS as well.
+            losses["turbulent_k"] = (residuals.turbulent_k / closure.k_reference).square().mean()
+            losses["turbulent_omega"] = (
+                residuals.turbulent_omega / closure.omega_reference**2
+            ).square().mean()
 
         outlet = self.sampler.outlet(boundary_batch, reynolds_bounds, angle_bounds)
         outlet_xy = outlet.xy.detach().requires_grad_(True)
-        grad_u, grad_v, grad_p = outlet_normal_gradients(
+        outlet_grad = all_outlet_normal_gradients(
             self.model.network, outlet_xy, outlet.reynolds, outlet.angle_deg
         )
-        losses["outlet_pressure_gradient"] = grad_p.square().mean()
-        losses["outlet_velocity_gradient"] = grad_u.square().mean() + grad_v.square().mean()
+        losses["outlet_pressure_gradient"] = outlet_grad["p"].square().mean()
+        losses["outlet_velocity_gradient"] = outlet_grad["u"].square().mean() + outlet_grad["v"].square().mean()
+        if self.config.turbulence.enabled:
+            closure = self.config.turbulence
+            losses["outlet_k_gradient"] = (outlet_grad["k"] / closure.k_reference).square().mean()
+            losses["outlet_omega_gradient"] = (outlet_grad["omega"] / closure.omega_reference).square().mean()
 
         points_per_case = max(8, boundary_batch // max(1, parameter_cases))
         flux_batch, tangent = self.sampler.flux_sections(
@@ -166,10 +188,14 @@ class Trainer:
                 min(chunk_size, candidates - start), reynolds_bounds, angle_bounds
             )
             xy = batch.xy.detach().requires_grad_(True)
-            residuals = navier_stokes_residuals(
+            residuals = flow_residuals(
                 self.model.network, xy, batch.reynolds, batch.angle_deg
             )
-            score = residuals.squared_score().detach()
+            scores = residuals.as_dict()
+            if self.config.turbulence.enabled:
+                scores["turbulent_k"] = scores["turbulent_k"] / self.config.turbulence.k_reference
+                scores["turbulent_omega"] = scores["turbulent_omega"] / self.config.turbulence.omega_reference**2
+            score = sum(value.square() for value in scores.values()).detach()
             count = min(keep, len(score))
             values, index = torch.topk(score, count)
             selected = SampleBatch(
@@ -358,6 +384,7 @@ class Trainer:
             "loss_weights": self.weights,
             "history": history,
             "physics_only": True,
+            "turbulence": self.config.turbulence.to_dict(),
             "lbfgs_polishing": polishing_summary,
         }
         return TrainingResult(global_step, elapsed, final, history)

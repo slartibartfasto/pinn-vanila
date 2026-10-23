@@ -45,7 +45,7 @@ def structural_validation(model: PINN, samples: int = 33) -> dict[str, Any]:
             wall_angle,
         )[:, :2]
 
-    return {
+    checks = {
         "geometry_roundtrip_max_s_m": float(np.max(np.abs(s_back - s))),
         "geometry_roundtrip_max_eta": float(np.max(np.abs(eta_back - eta))),
         "geometry_all_inside": bool(np.all(inside)),
@@ -62,3 +62,27 @@ def structural_validation(model: PINN, samples: int = 33) -> dict[str, Any]:
         ),
         "note": "Poiseuille uses its compatible nonzero outlet pressure gradient; it is not a zero-gradient outlet benchmark.",
     }
+    if model.network.config.turbulence.enabled:
+        closure = model.network.config.turbulence
+        with torch.no_grad():
+            full_inlet = model.network(inlet_xy, reynolds, angles)
+            expected_k, expected_omega = closure.inlet_targets(inlet_eta, reynolds)
+            checks["inlet_k_relative_max_error"] = float(
+                ((full_inlet[:, 3] - expected_k).abs() / closure.k_reference).max().cpu()
+            )
+            checks["inlet_omega_relative_max_error"] = float(
+                ((full_inlet[:, 4] - expected_omega).abs() / expected_omega).max().cpu()
+            )
+            wall_k_errors, wall_omega_errors = [], []
+            for sign in (-1.0, 1.0):
+                wall_eta = sign * torch.ones_like(wall_s)
+                wall_points = model.network.bend_map.map(wall_s, wall_eta, wall_angle)
+                fields = model.network(wall_points, reynolds, wall_angle)
+                _, target_omega = closure.inlet_targets(wall_eta, reynolds)
+                wall_k_errors.append(fields[:, 3].abs().max())
+                wall_omega_errors.append(((fields[:, 4] - target_omega).abs() / target_omega).max())
+            checks["wall_k_dimensionless_max"] = float(torch.stack(wall_k_errors).max().cpu())
+            checks["wall_omega_relative_max_error"] = float(torch.stack(wall_omega_errors).max().cpu())
+        checks["turbulence_model"] = closure.model
+        checks["wall_omega_distance_over_width"] = closure.wall_omega_distance_over_width
+    return checks

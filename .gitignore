@@ -206,6 +206,9 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Generated training checkpoints, metrics, and field images
+/trained/
+
 # PyPI configuration file
 .pypirc
 

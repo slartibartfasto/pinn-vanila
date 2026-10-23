@@ -22,6 +22,7 @@ class TrainingSmokeTests(unittest.TestCase):
                 hidden_width=12,
                 fourier_enabled=False,
                 precision="float64",
+                turbulence=config.turbulence,
             ),
         )
         model = PINN(network, config.case, config.velocity_bounds)

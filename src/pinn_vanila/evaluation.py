@@ -11,7 +11,7 @@ import torch
 
 from .case import BendGeometry
 from .model import PINN, PredictionResult
-from .physics import navier_stokes_residuals, outlet_normal_gradients
+from .physics import flow_residuals, all_outlet_normal_gradients
 from .sampling import PhysicsSampler
 
 
@@ -147,28 +147,48 @@ def physics_metrics(
     )
     sample_batch = sampler.interior(256, (reynolds, reynolds), (angle, angle))
     xy = sample_batch.xy.detach().requires_grad_(True)
-    residual = navier_stokes_residuals(
+    residual = flow_residuals(
         model.network, xy, sample_batch.reynolds, sample_batch.angle_deg
     )
     outlet_batch = sampler.outlet(samples, (reynolds, reynolds), (angle, angle))
     outlet_xy = outlet_batch.xy.detach().requires_grad_(True)
-    grad_u, grad_v, grad_p = outlet_normal_gradients(
+    normal_grad = all_outlet_normal_gradients(
         model.network, outlet_xy, outlet_batch.reynolds, outlet_batch.angle_deg
     )
-    return {
+    metrics = {
         "mass_imbalance": float(mass_imbalance),
         "relative_wall_slip": wall_slip,
         "outlet_backflow_fraction": backflow_fraction,
         "pde_continuity_rms": float(residual.continuity.square().mean().sqrt().detach().cpu()),
         "pde_momentum_x_rms": float(residual.momentum_x.square().mean().sqrt().detach().cpu()),
         "pde_momentum_y_rms": float(residual.momentum_y.square().mean().sqrt().detach().cpu()),
-        "outlet_normal_pressure_gradient_rms": float(grad_p.square().mean().sqrt().detach().cpu()),
+        "outlet_normal_pressure_gradient_rms": float(normal_grad["p"].square().mean().sqrt().detach().cpu()),
         "outlet_normal_velocity_gradient_rms": float(
-            (grad_u.square() + grad_v.square()).mean().sqrt().detach().cpu()
+            (normal_grad["u"].square() + normal_grad["v"].square()).mean().sqrt().detach().cpu()
         ),
         "diagnostic_vmax_m_s": speed,
         "diagnostic_reynolds": reynolds,
     }
+    if model.network.config.turbulence.enabled:
+        closure = model.network.config.turbulence
+        predicted = model._dimensionless_prediction(
+            sample_batch.xy.detach().cpu().numpy(), reynolds, angle, 256
+        )
+        k, omega = predicted[:, 3], predicted[:, 4]
+        metrics.update({
+            "pde_turbulent_k_rms": float(residual.turbulent_k.square().mean().sqrt().detach().cpu()),
+            "pde_turbulent_omega_rms": float(residual.turbulent_omega.square().mean().sqrt().detach().cpu()),
+            "pde_turbulent_k_scaled_rms": float((residual.turbulent_k / closure.k_reference).square().mean().sqrt().detach().cpu()),
+            "pde_turbulent_omega_scaled_rms": float((residual.turbulent_omega / closure.omega_reference**2).square().mean().sqrt().detach().cpu()),
+            "outlet_normal_k_gradient_rms": float(normal_grad["k"].square().mean().sqrt().detach().cpu()),
+            "outlet_normal_omega_gradient_rms": float(normal_grad["omega"].square().mean().sqrt().detach().cpu()),
+            "k_min_dimensionless": float(k.min()),
+            "omega_min_dimensionless": float(omega.min()),
+            "negative_k_fraction": float(np.mean(k < 0)),
+            "nonpositive_omega_fraction": float(np.mean(omega <= 0)),
+            "eddy_to_molecular_viscosity_ratio_max": float(np.max(reynolds * k / omega)),
+        })
+    return metrics
 
 
 def evaluate_model(

@@ -2,7 +2,9 @@
 
 Physics-informed neural network for steady two-dimensional incompressible flow through a smooth planar bend. The package implements the supplied parameter family: channel width 0.5 m, centerline radius 1 m, 2 m inlet and outlet segments, bend angles from 15° to 90°, and inlet `Vmax` from 1 to 20 m/s (`Re=500..10000`).
 
-The model is a float64 geometry-conditioned residual MLP with FiLM conditioning and two-scale Fourier features. It predicts dimensionless velocity and pressure. The inlet parabola and wall no-slip condition are exact by construction. Training uses physical-coordinate autograd for the strong Navier–Stokes residuals, soft outlet gradients, mass-flux control, a Reynolds/angle curriculum, gradient-norm loss balancing, and residual adaptive refinement.
+The default model solves steady incompressible **RANS with the Wilcox-1988 k-omega closure**, predicting mean velocity, static pressure, turbulent kinetic energy k and specific dissipation omega. It uses a float64 geometry-conditioned residual MLP with FiLM and Fourier features. Inlet/wall constraints are exact by construction; training includes mean-flow and k/omega transport residuals, soft outlet gradients, mass-flux control, a Reynolds/angle curriculum and residual adaptive refinement. See [RANS equations, boundaries and validation](docs/rans.md) for the exact closure and finite wall-omega regularization.
+
+The previous laminar solver remains available through `configs/pinn_laminar_config.yaml`. Old three-output models remain laminar and require new training to obtain a RANS checkpoint.
 
 ## Setup
 
@@ -25,7 +27,7 @@ The complete configured run is intentionally expensive: four curriculum stages w
 ```bash
 .venv/bin/pinn-vanila-train \
   --config configs/pinn_vanila_config.yaml \
-  --output trained/seed-42
+  --output trained/rans-komega/seed-42
 ```
 
 Repeat with `--seed 137` and `--seed 2026` and distinct output directories for the other required independent runs.
@@ -39,14 +41,14 @@ Use small overrides only for an execution smoke test:
 ```
 
 The module is also directly runnable with `python -m pinn_vanila.train --output /tmp/pinn-smoke --quick --device cuda`.
-In VS Code, open `src/pinn_vanila/train.py` and click **Run Python File** to start the full configured GPU training; its default checkpoint directory is `trained/seed-42`. CUDA is mandatory by default, so a machine without an attached NVIDIA GPU fails clearly instead of silently using the CPU. Use `--device cpu` only for a short debugging run.
+In VS Code, open `src/pinn_vanila/train.py` and click **Run Python File** to start the full configured GPU RANS training; its default checkpoint directory is `trained/rans-komega/seed-42`. CUDA is mandatory by default, so a machine without an attached NVIDIA GPU fails clearly instead of silently using the CPU. Use `--device cpu` only for a short debugging run.
 
 The model directory records the run as it proceeds:
 
-- `training.log` contains timestamped console logs with total, continuity, momentum, outlet-boundary, and mass-flux losses.
+- `training.log` contains timestamped console logs with total, continuity, momentum, k/omega transport, outlet-boundary, and mass-flux losses.
 - `metrics.csv` contains loss values and loss weights at every configured logging step; `metrics.json` adds field diagnostics and structural checks.
-- `training_losses.png` plots PDE, boundary, flux, and total loss histories.
-- `fields/fields_step_*.png` contains velocity components, speed, relative pressure, and velocity vectors every 200 steps, plus the final step.
+- `training_losses.png` plots mean-flow, boundary, flux, k/omega, and total loss histories.
+- `fields/fields_step_*.png` contains velocity components, speed, inlet-gauged relative pressure, k, omega, eddy viscosity and velocity vectors every 200 steps, plus the final step.
 
 A saved directory contains `model.pt` plus `metadata.json`, including the physical domain and validation status. A trained model is not labeled CFD-validated until it has been compared with independent, boundary-condition-matched reference data.
 
@@ -60,7 +62,7 @@ case = FlowCase.from_yaml(
     "configs/geometry_parametric.yaml",
     "configs/fluid_selected.yaml",
 )
-model = PINN.load("trained/seed-42")
+model = PINN.load("trained/rans-komega/seed-42")
 points_xy_m = np.array([[0.5, 0.0], [2.0, 0.0]])
 result = model.predict(
     geometry=case.geometry,
@@ -69,6 +71,7 @@ result = model.predict(
     inlet_pressure_pa=180000.0,
 )
 print(result.u_m_s, result.v_m_s, result.p_pa)
+print(result.k_m2_s2, result.omega_s_inv, result.nu_t_m2_s)
 ```
 
 The inlet pressure is the mean static pressure at the inlet section and fixes only the additive pressure gauge. The package computes
@@ -81,7 +84,7 @@ Queries outside the channel or trained speed/angle range fail explicitly. `extra
 
 ```bash
 .venv/bin/pinn-vanila predict \
-  --model trained/seed-42 \
+  --model trained/rans-komega/seed-42 \
   --geometry configs/geometry_parametric.yaml \
   --fluid configs/fluid_selected.yaml \
   --points points.csv --vmax 12 --pressure 180000 \
@@ -95,7 +98,7 @@ Compare a checkpoint with boundary-condition-matched CFD data (CSV columns `x_m,
 
 ```bash
 .venv/bin/pinn-vanila evaluate \
-  --model trained/seed-42 \
+  --model trained/rans-komega/seed-42 \
   --geometry configs/geometry_parametric.yaml \
   --reference reference.csv --vmax 12 --pressure 180000 \
   --output validation-report.json

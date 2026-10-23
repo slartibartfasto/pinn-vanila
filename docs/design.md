@@ -1,5 +1,9 @@
 # Design and validation notes
 
+The default workflow now uses RANS k-omega; see [the RANS model definition](rans.md)
+for all five equations, boundary profiles, scalings and limitations. The laminar
+workflow below remains available through `configs/pinn_laminar_config.yaml`.
+
 The package follows the supplied technical specification while keeping claims separate from implementation. The architecture and training budgets are engineering hypotheses. A successful optimizer run does not establish that a unique physically relevant stationary solution exists throughout `Re=500..10000`.
 
 The map is `r(s, eta) = r_c(s) + H eta n(s)/2`. Its minimum arc Jacobian factor is `1-H/(2R)=0.75`. The NumPy map is used to reject invalid query points; the equivalent Torch map preserves autograd from network outputs back to physical `x,y` for first and second derivatives.

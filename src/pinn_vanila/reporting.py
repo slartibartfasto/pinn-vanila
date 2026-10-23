@@ -22,6 +22,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 import numpy as np
 import torch
 
@@ -39,6 +40,9 @@ LOSS_COLUMNS = (
     "outlet_pressure_gradient",
     "outlet_velocity_gradient",
     "mass_flux",
+)
+RANS_LOSS_COLUMNS = (
+    "turbulent_k", "turbulent_omega", "outlet_k_gradient", "outlet_omega_gradient",
 )
 
 
@@ -61,6 +65,7 @@ class TrainingReporter:
         self.device = device
         self.log_every = log_every
         self.field_every = field_every
+        self.loss_columns = LOSS_COLUMNS + (RANS_LOSS_COLUMNS if config.turbulence.enabled else ())
         self.fields_directory = self.root / "fields"
         self.log_path = self.root / "training.log"
         self.metrics_csv_path = self.root / "metrics.csv"
@@ -94,13 +99,8 @@ class TrainingReporter:
             "reynolds_max",
             "angle_min_deg",
             "angle_max_deg",
-            *LOSS_COLUMNS,
-            "weight_continuity",
-            "weight_momentum_x",
-            "weight_momentum_y",
-            "weight_outlet_pressure_gradient",
-            "weight_outlet_velocity_gradient",
-            "weight_mass_flux",
+            *self.loss_columns,
+            *(f"weight_{name}" for name in self.loss_columns if name != "total"),
         ]
         self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=fieldnames, extrasaction="ignore")
         self._csv_writer.writeheader()
@@ -176,7 +176,7 @@ class TrainingReporter:
 
     @staticmethod
     def _format_entry(entry: dict[str, float]) -> str:
-        return (
+        message = (
             f"step={int(entry['step'])} stage={int(entry['stage'])} "
             f"elapsed={entry['elapsed_seconds']:.1f}s lr={entry['lr']:.3e} "
             f"total={entry['total']:.3e} cont={entry['continuity']:.3e} "
@@ -184,6 +184,12 @@ class TrainingReporter:
             f"bc_p={entry['outlet_pressure_gradient']:.3e} "
             f"bc_uv={entry['outlet_velocity_gradient']:.3e} flux={entry['mass_flux']:.3e}"
         )
+        if "turbulent_k" in entry:
+            message += (
+                f" k_eq={entry['turbulent_k']:.3e} omega_eq={entry['turbulent_omega']:.3e}"
+                f" bc_k={entry['outlet_k_gradient']:.3e} bc_omega={entry['outlet_omega_gradient']:.3e}"
+            )
+        return message
 
     def _collect_diagnostic(self, model: PINN, step: int) -> dict[str, Any]:
         was_training = model.network.training
@@ -205,31 +211,39 @@ class TrainingReporter:
         points = geometry.map(s_grid.ravel(), eta_grid.ravel(), angle)
         was_training = model.network.training
         try:
-            prediction = model._dimensionless_prediction(points, reynolds, angle, batch_size=65536)
+            prediction = model.predict(geometry, points, speed, 0.0, batch_size=65536)
         finally:
             model.network.train(was_training)
-        u = (speed * prediction[:, 0]).reshape(s_grid.shape)
-        v = (speed * prediction[:, 1]).reshape(s_grid.shape)
-        relative_pressure = (
-            model.case.fluid.density * speed**2 * prediction[:, 2]
-        ).reshape(s_grid.shape)
+        u = prediction.u_m_s.reshape(s_grid.shape)
+        v = prediction.v_m_s.reshape(s_grid.shape)
+        relative_pressure = prediction.p_pa.reshape(s_grid.shape)
         magnitude = np.hypot(u, v)
         xy = geometry.map(s_grid, eta_grid, angle)
         x, y = xy[..., 0], xy[..., 1]
-        fields = (
+        fields = [
             (u, "$u$ [m/s]", "RdBu_r"),
             (v, "$v$ [m/s]", "RdBu_r"),
             (relative_pressure, "relative $p$ [Pa]", "coolwarm"),
             (magnitude, "$|u|$ [m/s]", "viridis"),
-        )
-        figure, axes = plt.subplots(2, 2, figsize=(14, 8), constrained_layout=True)
-        for axis, (values, title, cmap) in zip(axes.flat, fields, strict=True):
-            image = axis.pcolormesh(x, y, values, shading="auto", cmap=cmap)
+        ]
+        if prediction.k_m2_s2 is not None:
+            fields.extend([
+                (prediction.k_m2_s2.reshape(s_grid.shape), "$k$ [m²/s²]", "viridis"),
+                (prediction.omega_s_inv.reshape(s_grid.shape), "$\\omega$ [1/s] (log scale)", "magma"),
+                (prediction.nu_t_m2_s.reshape(s_grid.shape), "$\\nu_t$ [m²/s]", "plasma"),
+            ])
+        rows = (len(fields) + 1) // 2
+        figure, axes = plt.subplots(rows, 2, figsize=(14, 4 * rows), constrained_layout=True)
+        for axis, (values, title, cmap) in zip(axes.flat, fields):
+            norm = LogNorm() if "omega" in title else None
+            image = axis.pcolormesh(x, y, values, shading="auto", cmap=cmap, norm=norm)
             figure.colorbar(image, ax=axis, label=title)
             axis.set_title(title)
             axis.set_xlabel("x [m]")
             axis.set_ylabel("y [m]")
             axis.set_aspect("equal")
+        for axis in list(axes.flat)[len(fields):]:
+            axis.set_visible(False)
         stride_y, stride_x = 8, 14
         axes[1, 1].quiver(
             x[::stride_y, ::stride_x],
@@ -251,7 +265,9 @@ class TrainingReporter:
         if not self.history:
             return
         steps = np.array([row["step"] for row in self.history])
-        figure, axes = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
+        rans = self.config.turbulence.enabled
+        panels = 3 if rans else 2
+        figure, axes = plt.subplots(1, panels, figsize=(7 * panels, 5), constrained_layout=True)
         for name in ("total", "continuity", "momentum_x", "momentum_y"):
             values = np.maximum(np.array([row[name] for row in self.history]), 1e-30)
             axes[0].semilogy(steps, values, label=name)
@@ -268,6 +284,15 @@ class TrainingReporter:
         axes[1].set_ylabel("MSE loss")
         axes[1].legend()
         axes[1].grid(True, which="both", alpha=0.3)
+        if rans:
+            for name in RANS_LOSS_COLUMNS:
+                values = np.maximum(np.array([row[name] for row in self.history]), 1e-30)
+                axes[2].semilogy(steps, values, label=name)
+            axes[2].set_title("k-omega transport and outlet losses (scaled)")
+            axes[2].set_xlabel("optimization step")
+            axes[2].set_ylabel("MSE loss")
+            axes[2].legend()
+            axes[2].grid(True, which="both", alpha=0.3)
         figure.savefig(self.plot_path, dpi=160)
         plt.close(figure)
 
@@ -300,7 +325,8 @@ class TrainingReporter:
         structural_validation: dict[str, Any],
     ) -> None:
         final_step = result.steps
-        if final_step > 0 and self._last_field_step != final_step:
+        polished = model.training_summary.get("lbfgs_polishing", {}).get("enabled", False)
+        if final_step > 0 and (self._last_field_step != final_step or polished):
             diagnostic = self._collect_diagnostic(model, final_step)
             self.diagnostics.append(diagnostic)
             self._render_fields(model, final_step)

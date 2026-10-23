@@ -79,6 +79,13 @@ class TrainingEntryTests(unittest.TestCase):
             metrics = json.loads((output / "metrics.json").read_text())
             self.assertIn("continuity", metrics["latest"])
             self.assertTrue(metrics["physics_diagnostics"])
+            for name in ("turbulent_k", "turbulent_omega", "outlet_k_gradient", "outlet_omega_gradient"):
+                self.assertIn(name, metrics["latest"])
+                self.assertIn(name, (output / "metrics.csv").read_text().splitlines()[0])
+            checks = metrics["structural_validation"]
+            self.assertEqual(checks["turbulence_model"], "k_omega_1988")
+            self.assertLess(checks["wall_omega_relative_max_error"], 1e-10)
+            self.assertEqual(metrics["physics_diagnostics"][0]["negative_k_fraction"], 0.0)
 
 
 if __name__ == "__main__":

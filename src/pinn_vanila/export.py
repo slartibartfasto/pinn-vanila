@@ -15,6 +15,7 @@ def export_prediction(
     destination = Path(path)
     points = np.asarray(points_xy, dtype=float)
     suffix = destination.suffix.lower()
+    turbulence_fields = result.turbulence_fields()
     columns = np.column_stack(
         (
             points,
@@ -22,6 +23,7 @@ def export_prediction(
             result.v_m_s,
             result.p_pa,
             result.velocity_magnitude_m_s,
+            *turbulence_fields.values(),
         )
     )
     if suffix == ".csv":
@@ -29,7 +31,7 @@ def export_prediction(
             destination,
             columns,
             delimiter=",",
-            header="x_m,y_m,u_m_s,v_m_s,p_pa,velocity_magnitude_m_s",
+            header=",".join(["x_m", "y_m", "u_m_s", "v_m_s", "p_pa", "velocity_magnitude_m_s", *turbulence_fields]),
             comments="",
         )
         return
@@ -44,6 +46,8 @@ def export_prediction(
             handle.create_dataset("v_m_s", data=result.v_m_s)
             handle.create_dataset("p_pa", data=result.p_pa)
             handle.create_dataset("velocity_magnitude_m_s", data=result.velocity_magnitude_m_s)
+            for name, values in turbulence_fields.items():
+                handle.create_dataset(name, data=values)
         return
     if suffix in {".vtu", ".vtk"}:
         try:
@@ -62,6 +66,7 @@ def export_prediction(
                 ),
                 "pressure_pa": result.p_pa,
                 "velocity_magnitude_m_s": result.velocity_magnitude_m_s,
+                **turbulence_fields,
             },
         )
         return

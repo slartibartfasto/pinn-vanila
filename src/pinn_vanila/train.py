@@ -15,7 +15,7 @@ MODULE_PATH = Path(__file__).resolve()
 SOURCE_ROOT = MODULE_PATH.parents[1]
 PROJECT_ROOT = MODULE_PATH.parents[2]
 DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "pinn_vanila_config.yaml"
-DEFAULT_OUTPUT = PROJECT_ROOT / "trained" / "seed-42"
+DEFAULT_OUTPUT = PROJECT_ROOT / "trained" / "rans-komega" / "seed-42"
 
 # VS Code's "Run Python File" executes this source file directly, rather than
 # through ``python -m``. Add the src root in that case so package imports work

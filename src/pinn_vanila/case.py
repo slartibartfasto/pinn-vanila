@@ -10,6 +10,7 @@ import numpy as np
 import yaml
 
 from .errors import ConfigurationError, GeometryError
+from .turbulence import TurbulenceConfig
 
 
 def _read_yaml(path: str | Path) -> dict[str, Any]:
@@ -284,11 +285,13 @@ class ProjectConfig:
         physical = self.raw.get("physical_problem", {}) or {}
         boundary = self.raw.get("boundary_conditions", {}) or {}
         network = self.raw.get("network", {}) or {}
+        turbulence = self.turbulence
         required = {
             "project.training_mode": (project.get("training_mode"), "physics_only"),
             "physical_problem.equations": (
                 physical.get("equations"),
-                "steady_incompressible_navier_stokes_2d",
+                "steady_incompressible_rans_2d" if turbulence.enabled
+                else "steady_incompressible_navier_stokes_2d",
             ),
             "physical_problem.reynolds_definition": (
                 physical.get("reynolds_definition"),
@@ -298,7 +301,10 @@ class ProjectConfig:
                 network.get("architecture"),
                 "geometry_conditioned_residual_mlp",
             ),
-            "network.formulation": (network.get("formulation"), "velocity_pressure"),
+            "network.formulation": (
+                network.get("formulation"),
+                "velocity_pressure_k_omega" if turbulence.enabled else "velocity_pressure",
+            ),
             "network.differentiation": (
                 network.get("differentiation"),
                 "autograd_physical_coordinates",
@@ -326,6 +332,23 @@ class ProjectConfig:
         low_v, high_v = self.velocity_bounds
         if not (0 < low_v < high_v):
             raise ConfigurationError("inlet_velocity_bounds_m_s must be positive and increasing")
+        expected_outputs = ["u", "v", "p", "k", "omega"] if turbulence.enabled else ["u", "v", "p"]
+        if network.get("output_variables") != expected_outputs:
+            raise ConfigurationError(f"network.output_variables must be {expected_outputs}")
+        if turbulence.enabled:
+            expected_boundaries = {
+                "inlet": {"enforcement": "hard", "k": "intensity_parabolic_squared", "omega": "regularized_two_wall_profile"},
+                "walls": {"enforcement": "hard", "k": "zero", "omega": "regularized_two_wall_profile"},
+                "outlet": {"type": "zero_normal_gradient", "enforcement": "soft"},
+            }
+            for location, expected in expected_boundaries.items():
+                actual = (boundary.get(location, {}) or {}).get("turbulence")
+                if actual != expected:
+                    raise ConfigurationError(f"boundary_conditions.{location}.turbulence must be {expected}")
+
+    @property
+    def turbulence(self) -> TurbulenceConfig:
+        return TurbulenceConfig.from_dict(self.raw.get("turbulence"))
 
     @property
     def velocity_bounds(self) -> tuple[float, float]:

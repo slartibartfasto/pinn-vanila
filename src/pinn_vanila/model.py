@@ -21,6 +21,18 @@ class PredictionResult:
     u_m_s: np.ndarray
     v_m_s: np.ndarray
     p_pa: np.ndarray
+    k_m2_s2: np.ndarray | None = None
+    omega_s_inv: np.ndarray | None = None
+    nu_t_m2_s: np.ndarray | None = None
+
+    def turbulence_fields(self) -> dict[str, np.ndarray]:
+        return {
+            name: value for name, value in (
+                ("k_m2_s2", self.k_m2_s2),
+                ("omega_s_inv", self.omega_s_inv),
+                ("nu_t_m2_s", self.nu_t_m2_s),
+            ) if value is not None
+        }
 
     @property
     def velocity_magnitude_m_s(self) -> np.ndarray:
@@ -55,7 +67,7 @@ class PINN:
         seed = int((raw.get("project", {}) or {}).get("random_seed", 42))
         torch.manual_seed(seed)
         network_config = NetworkConfig.from_spec(
-            raw.get("network", {}), seed=seed
+            raw.get("network", {}), seed=seed, turbulence=config.turbulence
         )
         network = GeometryConditionedPINN(config.case.geometry, config.reynolds_bounds, network_config)
         return cls(network, config.case, config.velocity_bounds)
@@ -162,10 +174,20 @@ class PINN:
         physical_pressure = pressure + self.case.fluid.density * speed**2 * (
             dimensionless[:, 2] - mean_inlet_pi
         )
+        turbulence_fields = {}
+        if self.network.config.turbulence.enabled:
+            k_physical = speed**2 * dimensionless[:, 3]
+            omega_physical = speed / geometry.pipe_width * dimensionless[:, 4]
+            turbulence_fields = {
+                "k_m2_s2": k_physical,
+                "omega_s_inv": omega_physical,
+                "nu_t_m2_s": k_physical / np.maximum(omega_physical, np.finfo(float).tiny),
+            }
         return PredictionResult(
             u_m_s=speed * dimensionless[:, 0],
             v_m_s=speed * dimensionless[:, 1],
             p_pa=physical_pressure,
+            **turbulence_fields,
         )
 
     def metadata(self) -> dict[str, Any]:
@@ -177,6 +199,10 @@ class PINN:
             "velocity_bounds_m_s": list(self.velocity_bounds),
             "reynolds_bounds": list(self.network.reynolds_bounds),
             "network": self.network.config.to_dict(),
+            "equations": "steady_incompressible_rans_2d" if self.network.config.turbulence.enabled
+            else "steady_incompressible_navier_stokes_2d",
+            "turbulence": self.network.config.turbulence.to_dict(),
+            "pressure_kind": "static_mean_pressure",
             "validation_status": self.validation_status,
             "training_summary": self.training_summary,
             "pressure_gauge": "mean_inlet_static_pressure",

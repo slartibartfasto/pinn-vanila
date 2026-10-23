@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+import math
+from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from .case import BendGeometry
+from .turbulence import TurbulenceConfig
+
+
+def _positive_scale(value: torch.Tensor) -> torch.Tensor:
+    """Strictly positive smooth factor equal to one at zero."""
+    return (F.softplus(value) + 1e-12) / (math.log(2.0) + 1e-12)
 
 
 @dataclass(frozen=True)
@@ -23,9 +31,13 @@ class NetworkConfig:
     fourier_scales: tuple[float, ...] = (1.0, 4.0)
     precision: str = "float64"
     seed: int = 42
+    turbulence: TurbulenceConfig = field(default_factory=TurbulenceConfig)
 
     @classmethod
-    def from_spec(cls, data: Mapping[str, Any], seed: int = 42) -> "NetworkConfig":
+    def from_spec(
+        cls, data: Mapping[str, Any], seed: int = 42,
+        turbulence: TurbulenceConfig | None = None,
+    ) -> "NetworkConfig":
         fourier = data.get("fourier_embedding", {}) or {}
         return cls(
             hidden_layers=int(data.get("hidden_layers", 8)),
@@ -38,6 +50,7 @@ class NetworkConfig:
             fourier_scales=tuple(float(x) for x in fourier.get("scales", [1.0, 4.0])),
             precision=str(data.get("precision", "float64")),
             seed=int(seed),
+            turbulence=turbulence or TurbulenceConfig(),
         )
 
     @property
@@ -57,6 +70,7 @@ class NetworkConfig:
     def from_dict(cls, data: Mapping[str, Any]) -> "NetworkConfig":
         values = dict(data)
         values["fourier_scales"] = tuple(values["fourier_scales"])
+        values["turbulence"] = TurbulenceConfig.from_dict(values.get("turbulence"))
         return cls(**values)
 
 
@@ -101,14 +115,15 @@ class TorchBendMap:
 
         s_in = x
         eta_in = y / half_width
-        valid_in = (s_in >= 0.0) & (s_in <= g.inlet_length)
+        tolerance = 1e-9
+        valid_in = (s_in >= -tolerance) & (s_in <= g.inlet_length + tolerance)
 
         dx, dy = x - g.inlet_length, y - g.bend_radius
         theta = torch.atan2(dx, -dy)
         radius = torch.sqrt(dx.square() + dy.square())
         s_arc = g.inlet_length + g.bend_radius * theta
         eta_arc = (g.bend_radius - radius) / half_width
-        valid_arc = (theta >= 0.0) & (theta <= alpha)
+        valid_arc = (theta >= -tolerance) & (theta <= alpha + tolerance)
 
         arc_end = g.inlet_length + g.bend_radius * alpha
         end_x = g.inlet_length + g.bend_radius * torch.sin(alpha)
@@ -117,7 +132,7 @@ class TorchBendMap:
         tau = rel_x * torch.cos(alpha) + rel_y * torch.sin(alpha)
         eta_out = (-rel_x * torch.sin(alpha) + rel_y * torch.cos(alpha)) / half_width
         s_out = arc_end + tau
-        valid_out = (tau >= 0.0) & (tau <= g.outlet_length)
+        valid_out = (tau >= -tolerance) & (tau <= g.outlet_length + tolerance)
 
         candidates_s = torch.stack((s_in, s_arc, s_out), dim=1)
         candidates_eta = torch.stack((eta_in, eta_arc, eta_out), dim=1)
@@ -171,7 +186,7 @@ class GeometryConditionedPINN(nn.Module):
         self.film = nn.ModuleList(
             nn.Linear(2, 2 * width) for _ in range(self.config.hidden_layers + 1)
         )
-        self.output = nn.Linear(width, 3)
+        self.output = nn.Linear(width, 5 if self.config.turbulence.enabled else 3)
         self._reset_parameters()
         self.to(dtype=self.config.dtype)
         self.bend_map = TorchBendMap(geometry)
@@ -214,6 +229,10 @@ class GeometryConditionedPINN(nn.Module):
         s, eta, wall_distance, tangent, s_normalized = self.bend_map.inverse_features(
             xy_m, angle_deg
         )
+        if self.config.turbulence.enabled:
+            # Smooth wall proximity for second derivatives across the centerline.
+            # Exact distances to BOTH walls are used by the omega boundary profile.
+            wall_distance = 0.25 * (1.0 - eta.square())
         params = self.normalized_parameters(reynolds, angle_deg)
         base = [
             xy_m[:, 0] / self.geometry.pipe_width,
@@ -247,4 +266,12 @@ class GeometryConditionedPINN(nn.Module):
         correction = wall_envelope[:, None] * inlet_ramp[:, None] * raw[:, :2]
         inlet_profile = wall_envelope[:, None] * tangent
         velocity = inlet_profile + correction
-        return torch.cat((velocity, raw[:, 2:3]), dim=1)
+        outputs = [velocity, raw[:, 2:3]]
+        if self.config.turbulence.enabled:
+            k_inlet, omega_base = self.config.turbulence.inlet_targets(eta, reynolds)
+            # Smooth positive transforms, identity at inlet. k=0 at walls and
+            # omega equals the configured regularized wall value exactly.
+            k = k_inlet * _positive_scale(inlet_ramp * raw[:, 3])
+            omega = omega_base * _positive_scale(inlet_ramp * wall_envelope * raw[:, 4])
+            outputs.extend((k[:, None], omega[:, None]))
+        return torch.cat(outputs, dim=1)
